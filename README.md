@@ -101,6 +101,12 @@ Di Chrome, buka `chrome://extensions`, aktifkan **Developer mode**, pilih **Load
 
 ## Changelog
 
+### 0.3.6
+
+- Tambah ekspor workbook terpisah berdasarkan satu atau dua kolom bernama.
+- Kelompokkan nilai kolom yang sama lintas halaman dan file SQL, lalu unduh checkpoint hasil sebagai ZIP.
+- Validasi header kolom sebelum batch berjalan dan sertakan status kelengkapan ekspor di manifest.
+
 ### 0.3.5
 
 - Tambah pilihan query untuk menjalankan hanya file yang dipilih dari sebuah folder.
