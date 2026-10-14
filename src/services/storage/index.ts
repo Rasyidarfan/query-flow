@@ -61,6 +61,8 @@ export interface StoredFolderConfig {
   checkpointRows?: number;
   splitColumns?: string[];
   splitEnabled?: boolean;
+  /** Run Folder skips queries whose completed runs never returned a record. */
+  skipEmpty?: boolean;
 }
 
 export async function loadFolderConfigs(): Promise<Record<string, StoredFolderConfig>> {

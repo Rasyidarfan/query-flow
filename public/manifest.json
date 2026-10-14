@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "QueryFlow",
   "description": "Import, parameterisasi, batch execution SQL, dan ekspor hasil SQL Lab ke Excel.",
-  "version": "0.3.6",
-  "permissions": ["storage", "tabs", "sidePanel", "scripting", "clipboardWrite", "downloads"],
+  "version": "0.4.0",
+  "permissions": ["storage", "tabs", "sidePanel", "scripting", "clipboardWrite", "downloads", "unlimitedStorage"],
   "host_permissions": ["https://git.bps.go.id/*", "https://fasih-dashboard.bps.go.id/*"],
   "background": {
     "service_worker": "assets/background.js",

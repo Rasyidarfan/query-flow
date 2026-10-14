@@ -217,3 +217,9 @@ dialog::backdrop { background: rgba(22,29,25,.45); }
 .dialog-header h3 { margin: 4px 0 0; font: 700 12px ui-monospace, monospace; }
 .dialog-header button { border: 0; color: #c5d0c8; background: transparent; font-size: 20px; }
 pre { height: calc(100% - 62px); margin: 0; padding: 16px; overflow: auto; color: #d5e8dc; font: 11px/1.55 ui-monospace, SFMono-Regular, monospace; white-space: pre; }
+.kode-badge { flex: none; margin-left: 4px; padding: 1px 6px; border: 1px solid #a8b9ad; border-radius: 999px; color: #295f48; background: rgba(255,255,255,.72); font: 700 10px ui-monospace, SFMono-Regular, monospace; white-space: nowrap; }
+.kode-badge:hover { background: #e6eee8; }
+.kode-badge.is-empty { color: #7b887f; border-style: dashed; }
+.export-monitoring-button { margin-top: 6px; }
+.groups .progress { white-space: pre-line; }
+.db-summary { margin: 0 0 6px; font: 600 12px ui-monospace, SFMono-Regular, monospace; }

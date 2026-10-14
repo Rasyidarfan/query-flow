@@ -80,6 +80,31 @@ Di setiap folder, aktifkan **Advanced settings** untuk mengatur:
 
 Pengaturan disimpan per folder. Nilai default biasanya cukup untuk penggunaan biasa.
 
+## Database Hasil & Export Monitoring
+
+QueryFlow menyimpan hasil setiap run di database lokal browser (IndexedDB). Yang disimpan adalah run **lengkap** terakhir per query dan per filter wilayah, ditambah riwayat run. Run parsial, run yang gagal, dan run dengan **Mulai Baris**/**Maks Total Baris** yang diubah tidak menggantikan hasil lengkap.
+
+- **Kode anomali**: setiap query mendapat kode taskforce tetap (`T10`, `T11`, …), ditampilkan sebagai badge di samping nama file bersama jumlah record terakhir. Klik badge untuk mengganti kode. Kode lama tidak berubah saat folder diimpor ulang.
+- **Hanya query yang pernah menghasilkan record**: toggle per folder. Saat aktif, Run Folder melewati query yang sudah pernah selesai dijalankan dengan SQL dan filter wilayah yang sama tetapi tidak pernah menghasilkan record. Query baru atau yang SQL-nya berubah tetap dijalankan.
+- **Batas request**: eksekusi SQL ke SQL Lab dibatasi 30 per menit (jendela bergulir 60 detik) untuk semua Run dan Run Folder. Pengambilan lanjutan dari hasil yang sudah ada di SQL Lab tidak dihitung.
+- **⇩ Export Monitoring (CSV)**: mengunduh hasil lengkap terakhir dari query terpilih ke `Downloads/QueryFlow-monitoring/`, satu CSV per kode (ZIP bila lebih dari satu). Formatnya adalah CSV taskforce aplikasi monitoring (halaman **Anomali**). Kolom wajibnya: `kode_anomali, nama_anomali, assignment_id, kode_sls, nama_sls, nama_objek, no_objek, status, email_pencacah, email_pengawas, updated_at`. Kolom hasil query lainnya ikut sebagai detail.
+
+Kolom diisi otomatis dari nama kolom hasil query, tanpa membedakan huruf besar/kecil:
+
+| Kolom monitoring | Kolom query yang dikenali |
+|---|---|
+| `kode_sls` (16 digit) | `kode_sls`, `kode_subsls`, `idsubsls`, `level_6_full_code` |
+| `nama_sls` | `nama_sls`, `nama_subsls`, `level_6_name` |
+| `nama_objek` | `nama_objek`, `nama_usaha`, `nama_kk`, `nama_kepala_keluarga`, `nama_dtsen`, `nama` |
+| `no_objek` | `no_objek`, `index1`, `no_urut_kk`, `no_urut` |
+| `status` | `status`, `assignment_status_alias` |
+| `email_pencacah` / `email_pengawas` | `email_pencacah`, `email_petugas`, `pencacah` / `email_pengawas`, `pengawas` |
+| `updated_at` | `updated_at`, `assignment_date_modified`, `date_modified`, atau waktu selesai run |
+
+Baris tanpa `assignment_id` atau tanpa kode SLS 16 digit tidak diekspor, karena importer monitoring akan menolaknya. Ringkasan export menyebutkan query mana yang terdampak. Query dengan 0 record dan query yang belum punya run lengkap tidak diekspor.
+
+> Importer monitoring menghapus baris lama dengan kode yang sama bila baris itu tidak ada di berkas baru. Karena itu, jalankan ulang query sampai lengkap sebelum export, dan jangan memakai hasil yang difilter ke sebagian wilayah untuk kode yang biasanya mencakup semua wilayah.
+
 ## Instalasi untuk Development
 
 Perlu Node.js 20.19+ atau 22.12+.
@@ -100,6 +125,13 @@ Di Chrome, buka `chrome://extensions`, aktifkan **Developer mode**, pilih **Load
 - Versi ini ditujukan untuk FASIH SQL Lab. Perubahan pada aplikasi FASIH/Superset dapat memengaruhi kompatibilitas.
 
 ## Changelog
+
+### 0.4.0
+
+- Tambah database hasil lokal (IndexedDB): hasil lengkap terakhir per query & wilayah serta riwayat run.
+- Tambah toggle per folder untuk melewati query yang tidak pernah menghasilkan record.
+- Batasi eksekusi SQL ke SQL Lab maksimal 30 request per menit.
+- Tambah Export Monitoring: CSV taskforce dengan kode anomali per query, siap diunggah ke aplikasi monitoring.
 
 ### 0.3.6
 

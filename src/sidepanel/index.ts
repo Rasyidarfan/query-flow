@@ -8,9 +8,20 @@ let folderRunning = false;
 import { loadFolderConfigs, loadSnapshot, loadWilayah, saveFolderConfigs, saveSnapshot, saveWilayah, type StoredFolderConfig } from "../services/storage";
 import { groupSqlFiles, isSqlPath } from "../services/repository-sync/files";
 import { addWilayahCode, validateWilayah } from "../services/wilayah";
+import { assignKode, shouldSkipQuery, wilayahKey } from "../services/monitoring";
+import { exportMonitoring } from "../services/monitoring/export";
+import { RateLimiter } from "../services/rate-limit";
+import { clearResults, countRuns, getAllResults, getKodeMap, resultId, ResultRecorder, saveKodeMap, sha256Hex, type ResultRecord, type RunStatus } from "../services/results-db";
 import { TARGET, type ExtensionMessage, type RepositorySnapshot, type ScanResult, type SqlFile, type SqlRunProgress, type SqlChunkResponse, type SyncProgress, type WilayahConfig } from "../types";
 
+/** SQL Lab executions allowed per rolling minute, shared by every Run and Run Folder. */
+const SQL_REQUESTS_PER_MINUTE = 30;
+const sqlLimiter = new RateLimiter(SQL_REQUESTS_PER_MINUTE, 60_000);
+
 let snapshot: RepositorySnapshot | null = null;
+let kodeMap: Record<string, number> = {};
+let resultIndex = new Map<string, ResultRecord>();
+const kodeBadges = new Map<string, HTMLButtonElement>();
 let wilayah: WilayahConfig = { level1: [], level2: [] };
 let folderConfigs: Record<string, StoredFolderConfig> = {};
 let progress: SyncProgress = { phase: "idle", message: "Not synced" };
@@ -96,6 +107,17 @@ app.innerHTML = `
       <div id="empty-groups" class="empty-state">Import folder SQL untuk melihat daftar query dan menjalankannya di FASIH SQL Lab.</div>
       <div id="groups" class="groups"></div>
     </section>
+    <section class="section" aria-labelledby="db-title">
+      <div class="section-heading"><span>04</span><h2 id="db-title">Database Hasil</h2></div>
+      <div class="source-card">
+        <p id="db-summary" class="db-summary">Memuat…</p>
+        <p class="field-note">Hasil run lengkap terakhir per query &amp; wilayah disimpan di browser ini (IndexedDB) dan menjadi sumber Export Monitoring. Eksekusi SQL dibatasi ${SQL_REQUESTS_PER_MINUTE} request/menit.</p>
+        <p id="db-status" class="progress" role="status"></p>
+        <div class="source-actions">
+          <button id="db-clear" class="secondary-button" type="button">Kosongkan Database Hasil</button>
+        </div>
+      </div>
+    </section>
     <footer class="author-credit">Initiated by D. Agung Sungkono</footer>
   </main>
   <dialog id="preview-dialog">
@@ -121,13 +143,155 @@ async function initialize(): Promise<void> {
   progress = snapshot
     ? { phase: "success", message: snapshot.repository.namespace === "local-folder" ? "Imported" : "Synced" }
     : { phase: "idle", message: "Belum diimpor" };
+  try {
+    await loadResultDatabase();
+  } catch (error) {
+    byId("db-status").textContent = error instanceof Error ? `Database hasil tidak tersedia: ${error.message}` : "Database hasil tidak tersedia.";
+  }
   render();
+}
+
+async function loadResultDatabase(): Promise<void> {
+  const [kode, results] = await Promise.all([getKodeMap(), getAllResults()]);
+  resultIndex = new Map(results.map((record) => [record.id, record]));
+  kodeMap = kode;
+  await ensureKodeAssigned();
+}
+
+/** Every imported query gets a stable taskforce code; existing codes never change. */
+async function ensureKodeAssigned(): Promise<void> {
+  const paths = (snapshot?.groups ?? []).flatMap((group) => group.files.map((file) => file.path));
+  const next = assignKode(kodeMap, paths);
+  if (Object.keys(next).length !== Object.keys(kodeMap).length) {
+    kodeMap = next;
+    await saveKodeMap(kodeMap);
+  }
+}
+
+async function renderDatabase(): Promise<void> {
+  const records = [...resultIndex.values()];
+  const complete = records.filter((record) => record.completeRunId);
+  const rows = complete.reduce((sum, record) => sum + (record.completeRowCount ?? 0), 0);
+  const withRows = complete.filter((record) => (record.completeRowCount ?? 0) > 0).length;
+  let runs = 0;
+  try {
+    runs = await countRuns();
+  } catch {
+    // The summary stays usable without the run count.
+  }
+  byId("db-summary").textContent = records.length
+    ? `${complete.length} hasil lengkap (${withRows} berisi record) · ${rows.toLocaleString("id-ID")} baris · ${runs.toLocaleString("id-ID")} run tercatat`
+    : "Belum ada hasil tersimpan.";
+}
+
+function badgeText(path: string): { text: string; title: string } {
+  const kode = kodeMap[path];
+  const record = resultIndex.get(resultId(path, wilayahKey(wilayah)));
+  const prefix = kode === undefined ? "T?" : `T${kode}`;
+  if (!record) return { text: `${prefix} · —`, title: "Belum pernah dijalankan untuk filter wilayah ini." };
+  const completed = record.completeAt ? `Run lengkap terakhir: ${formatDate(record.completeAt)} · ${record.completeRowCount ?? 0} record.` : "Belum ada run lengkap.";
+  const last = record.lastStatus === "complete" ? "" : ` Run terakhir ${record.lastStatus === "partial" ? "dihentikan" : "gagal"}: ${record.lastMessage ?? ""}`;
+  const text = record.completeRunId
+    ? `${prefix} · ${(record.completeRowCount ?? 0).toLocaleString("id-ID")} rec`
+    : `${prefix} · ${record.lastStatus === "partial" ? "parsial" : "gagal"}`;
+  return { text, title: `${completed}${last} Klik untuk mengganti kode anomali.` };
+}
+
+function refreshBadge(path: string): void {
+  const badge = kodeBadges.get(path);
+  if (!badge) return;
+  const { text, title } = badgeText(path);
+  badge.textContent = text;
+  badge.title = title;
+  badge.classList.toggle("is-empty", resultIndex.get(resultId(path, wilayahKey(wilayah)))?.completeRowCount === 0);
+}
+
+async function editKode(path: string): Promise<void> {
+  const current = kodeMap[path];
+  const input = window.prompt(`Kode anomali taskforce untuk\n${path}\n\nMasukkan angka (tanpa huruf T):`, current === undefined ? "" : String(current));
+  if (input === null) return;
+  const value = Number(input.trim().replace(/^T/i, ""));
+  if (!Number.isInteger(value) || value < 1 || value > 9999) {
+    window.alert("Kode harus bilangan bulat 1–9999.");
+    return;
+  }
+  const owner = Object.entries(kodeMap).find(([other, kode]) => kode === value && other !== path)?.[0];
+  if (owner) {
+    window.alert(`T${value} sudah dipakai oleh ${owner}.`);
+    return;
+  }
+  kodeMap = { ...kodeMap, [path]: value };
+  await saveKodeMap(kodeMap);
+  refreshBadge(path);
+}
+
+/** Records rows in the result database without letting a storage failure abort the SQL run. */
+function createRecorder(runId: string, file: SqlFile, folder: string, sqlHash: string, warn: (message: string) => void) {
+  const recorder = new ResultRecorder(runId, {
+    path: file.path,
+    folder,
+    title: extractSqlTitle(file.content, file.name),
+    wilayahKey: wilayahKey(wilayah),
+    sqlHash,
+  });
+  let failed = false;
+  let finished = false;
+  const report = (error: unknown): void => {
+    failed = true;
+    warn(`Database hasil gagal menyimpan: ${error instanceof Error ? error.message : "error"}`);
+  };
+  return {
+    append: async (columns: string[], rows: unknown[][]): Promise<void> => {
+      if (failed) return;
+      try {
+        await recorder.append(columns, rows);
+      } catch (error) {
+        report(error);
+      }
+    },
+    finish: async (status: RunStatus, message?: string): Promise<void> => {
+      // Later failures (e.g. the Excel download) must not overwrite a recorded run.
+      if (finished) return;
+      finished = true;
+      // A run whose rows were not all stored must not become the "complete" result.
+      const finalStatus = failed && status === "complete" ? "error" : status;
+      try {
+        const record = await recorder.finish(finalStatus, failed ? "Sebagian baris gagal disimpan ke database." : message);
+        resultIndex.set(record.id, record);
+        refreshBadge(file.path);
+        void renderDatabase();
+      } catch (error) {
+        report(error);
+      }
+    },
+  };
+}
+
+/**
+ * Wraps a chunk request with the shared SQL Lab rate limit. Continuation
+ * chunks only read rows already held by SQL Lab, so they are not counted.
+ */
+function rateLimited(
+  send: (offset: number, limit: number, iteration: number) => Promise<SqlChunkResponse>,
+  report: (message: string) => void,
+  signal: AbortSignal,
+): (offset: number, limit: number, iteration: number) => Promise<SqlChunkResponse> {
+  let continuation = false;
+  return async (offset, limit, iteration) => {
+    if (!continuation) {
+      await sqlLimiter.acquire(signal, (ms) => report(`Batas ${SQL_REQUESTS_PER_MINUTE} request/menit tercapai — lanjut dalam ${Math.ceil(ms / 1000)} detik…`));
+    }
+    const response = await send(offset, limit, iteration);
+    continuation = response.ok && Boolean(response.continuation);
+    return response;
+  };
 }
 
 function render(): void {
   renderSource();
   renderWilayah();
   renderGroups();
+  void renderDatabase();
 }
 
 function renderSource(): void {
@@ -194,6 +358,7 @@ function renderCodeList(
 function renderGroups(): void {
   const groupsElement = byId("groups");
   groupsElement.replaceChildren();
+  kodeBadges.clear();
   byId("empty-groups").hidden = Boolean(snapshot?.groups.length);
   for (const group of snapshot?.groups ?? []) {
     const currentConfig = folderConfigs[group.path] ?? {};
@@ -218,6 +383,7 @@ function renderGroups(): void {
     let splitColumn1 = typeof configuredSplitColumns[0] === "string" ? configuredSplitColumns[0] : "";
     let splitColumn2 = typeof configuredSplitColumns[1] === "string" ? configuredSplitColumns[1] : "";
     let splitEnabled = typeof currentConfig.splitEnabled === "boolean" ? currentConfig.splitEnabled : Boolean(splitColumn1);
+    let skipEmpty = currentConfig.skipEmpty === true;
 
     const details = document.createElement("details");
     details.className = "group";
@@ -352,7 +518,18 @@ function renderGroups(): void {
     selectionActions.append(selectAllBtn, deselectAllBtn);
 
     toolbar.append(selectionBadge, selectionActions);
-    configBox.append(advancedSettingsLabel, advancedSettingsContent, toolbar);
+
+    const skipEmptyLabel = document.createElement("label");
+    skipEmptyLabel.className = "advanced-settings-toggle";
+    skipEmptyLabel.title = "Run Folder melewati query yang sudah pernah selesai dijalankan (SQL & wilayah sama) tetapi tidak pernah menghasilkan record. Query yang belum pernah dijalankan atau SQL-nya berubah tetap dijalankan.";
+    const skipEmptyInput = document.createElement("input");
+    skipEmptyInput.type = "checkbox";
+    skipEmptyInput.checked = skipEmpty;
+    const skipEmptyText = document.createElement("span");
+    skipEmptyText.textContent = "Hanya query yang pernah menghasilkan record";
+    skipEmptyLabel.append(skipEmptyInput, skipEmptyText);
+
+    configBox.append(advancedSettingsLabel, advancedSettingsContent, skipEmptyLabel, toolbar);
 
     const batch = document.createElement("button");
     batch.className = "secondary-button";
@@ -371,6 +548,7 @@ function renderGroups(): void {
         checkpointRows,
         splitColumns: [splitColumn1.trim(), splitColumn2.trim()],
         splitEnabled,
+        skipEmpty,
       };
       try {
         await saveFolderConfigs(folderConfigs);
@@ -439,6 +617,10 @@ function renderGroups(): void {
     splitSettingsInput.addEventListener("change", () => {
       splitEnabled = splitSettingsInput.checked;
       updateSplitSettingsState();
+      void persistCurrentFolderConfig();
+    });
+    skipEmptyInput.addEventListener("change", () => {
+      skipEmpty = skipEmptyInput.checked;
       void persistCurrentFolderConfig();
     });
 
@@ -529,6 +711,11 @@ function renderGroups(): void {
         ? new SplitChunkedExport(group.path, createRunId(), splitColumns, { checkpointRows })
         : new ChunkedExport(group.path, undefined, undefined, undefined, checkpointRows);
       batchStatus.classList.remove("progress-error", "progress-warning");
+      const runWilayahKey = wilayahKey(wilayah);
+      // Only full-range runs are stored as complete results; an offset or row cap yields a subset.
+      const fullRange = startRow === 1 && maxRows === undefined;
+      let skipped = 0;
+      let dbWarning = "";
       try {
         const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
         if (tab?.id === undefined) throw new Error("Aktifkan tab FASIH SQL Lab.");
@@ -536,27 +723,40 @@ function renderGroups(): void {
 
         for (const [index, file] of filesToRun.entries()) {
           if (batchStopRequested) throw new Error("Run Folder dihentikan oleh pengguna.");
+          const sqlHash = await sha256Hex(file.content);
+          if (skipEmpty && shouldSkipQuery(resultIndex.get(resultId(file.path, runWilayahKey)), sqlHash)) {
+            skipped++;
+            continue;
+          }
           batchStatus.textContent = `${index + 1}/${filesToRun.length}: ${file.name} — menunggu hasil. Tetap buka panel dan tab query ini.`;
           const runId = createRunId();
           batchRunId = runId;
           runProgressTargets.set(runId, (runProgress) => {
             batchStatus.textContent = `${index + 1}/${filesToRun.length}: ${file.name} — ${formatRunProgress(runProgress)}`;
           });
+          const recorder = fullRange ? createRecorder(runId, file, group.path, sqlHash, (message) => { dbWarning = message; }) : null;
           let pending: Promise<SqlChunkResponse> | undefined;
           try {
             await collectQuery(
-              (offset, _limit, iteration) => {
-                batchStatus.textContent = `${index + 1}/${filesToRun.length}: ${file.name} — ${formatRunProgress({
-                  runId,
-                  path: file.path,
-                  iteration,
-                  state: "running",
-                  rowsCollected: Math.max(0, offset - (startRow - 1)),
-                })}`;
-                pending = chrome.runtime.sendMessage({ type: "RUN_SQL_FILE", path: file.path, tabId: tab.id!, runId, offset, limit: _limit, iteration } satisfies ExtensionMessage) as Promise<SqlChunkResponse>;
-                return pending;
+              rateLimited(
+                (offset, _limit, iteration) => {
+                  batchStatus.textContent = `${index + 1}/${filesToRun.length}: ${file.name} — ${formatRunProgress({
+                    runId,
+                    path: file.path,
+                    iteration,
+                    state: "running",
+                    rowsCollected: Math.max(0, offset - (startRow - 1)),
+                  })}`;
+                  pending = chrome.runtime.sendMessage({ type: "RUN_SQL_FILE", path: file.path, tabId: tab.id!, runId, offset, limit: _limit, iteration } satisfies ExtensionMessage) as Promise<SqlChunkResponse>;
+                  return pending;
+                },
+                (message) => { batchStatus.textContent = `${index + 1}/${filesToRun.length}: ${file.name} — ${message}`; },
+                batchController.signal,
+              ),
+              async (columns, rows) => {
+                await output.append({ filename: file.path, title: extractSqlTitle(file.content, file.name), columns, rows });
+                await recorder?.append(columns, rows);
               },
-              (columns, rows) => output.append({ filename: file.path, title: extractSqlTitle(file.content, file.name), columns, rows }),
               () => batchStopRequested,
               (message) => { batchStatus.textContent = message; },
               batchController.signal,
@@ -568,6 +768,10 @@ function renderGroups(): void {
                 },
               },
             );
+            await recorder?.finish("complete");
+          } catch (error) {
+            await recorder?.finish(batchStopRequested ? "partial" : "error", error instanceof Error ? error.message : "Run gagal.");
+            throw error;
           } finally {
             runProgressTargets.delete(runId);
             // Keep cancellation active until the outstanding request settles.
@@ -577,9 +781,12 @@ function renderGroups(): void {
         }
         await output.flush(true);
         const outputType = output instanceof SplitChunkedExport ? "file ZIP" : "file Excel";
-        batchStatus.textContent = `Selesai: ${output.totalRows.toLocaleString("id-ID")} baris · ${output.parts} ${outputType} diunduh.`;
+        batchStatus.textContent = `Selesai: ${output.totalRows.toLocaleString("id-ID")} baris · ${output.parts} ${outputType} diunduh.`
+          + (skipped ? ` ${skipped} query dilewati (tidak pernah menghasilkan record).` : "")
+          + (fullRange ? "" : " Rentang baris dibatasi, hasil tidak disimpan ke database.")
+          + (dbWarning ? ` ${dbWarning}` : "");
       } catch (error) {
-        batchStatus.textContent = await finishPartial(output, error);
+        batchStatus.textContent = await finishPartial(output, error) + (dbWarning ? ` ${dbWarning}` : "");
       } finally {
         folderRunning = false;
         batchRunId = null;
@@ -591,7 +798,39 @@ function renderGroups(): void {
       }
     });
 
-    files.append(configBox, batch, batchStatus);
+    const exportButton = document.createElement("button");
+    exportButton.type = "button";
+    exportButton.className = "secondary-button export-monitoring-button";
+    exportButton.textContent = "⇩ Export Monitoring (CSV)";
+    exportButton.title = "Unduh hasil lengkap terakhir dari query terpilih (wilayah aktif) sebagai CSV taskforce untuk diunggah di halaman Anomali aplikasi monitoring.";
+    exportButton.addEventListener("click", async () => {
+      const items = group.files
+        .filter((file) => selectedPaths.has(file.path) && kodeMap[file.path] !== undefined)
+        .map((file) => ({ path: file.path, title: extractSqlTitle(file.content, file.name), kode: kodeMap[file.path]! }));
+      if (!items.length) {
+        batchStatus.textContent = "Pilih minimal 1 query untuk diekspor.";
+        return;
+      }
+      exportButton.disabled = true;
+      batchStatus.classList.remove("progress-error", "progress-warning");
+      batchStatus.textContent = "Menyiapkan CSV monitoring…";
+      try {
+        const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+        const summary = await exportMonitoring(items, wilayahKey(wilayah), `monitoring_${group.path.replace(/[^\w-]+/g, "_")}_${stamp}`);
+        const head = summary.files
+          ? `Export monitoring: ${summary.files} CSV · ${summary.rows.toLocaleString("id-ID")} baris diunduh ke Downloads/QueryFlow-monitoring.`
+          : "Tidak ada hasil yang bisa diekspor.";
+        batchStatus.textContent = [head, ...summary.notes].join("\n");
+        if (summary.notes.length) batchStatus.classList.add("progress-warning");
+      } catch (error) {
+        batchStatus.textContent = error instanceof Error ? error.message : "Export monitoring gagal.";
+        batchStatus.classList.add("progress-error");
+      } finally {
+        exportButton.disabled = false;
+      }
+    });
+
+    files.append(configBox, batch, exportButton, batchStatus);
 
     for (const file of group.files) {
       const isSelected = selectedPaths.has(file.path);
@@ -628,7 +867,14 @@ function renderGroups(): void {
       nameBtn.textContent = file.name;
       nameBtn.addEventListener("click", () => showPreview(file.name, file.path, file.content));
 
-      checkTitle.append(checkbox, nameBtn);
+      const kodeBadge = document.createElement("button");
+      kodeBadge.type = "button";
+      kodeBadge.className = "kode-badge";
+      kodeBadge.addEventListener("click", () => void editKode(file.path));
+      kodeBadges.set(file.path, kodeBadge);
+      refreshBadge(file.path);
+
+      checkTitle.append(checkbox, nameBtn, kodeBadge);
 
       const actions = document.createElement("div");
       actions.className = "file-actions";
@@ -679,6 +925,8 @@ function renderGroups(): void {
         runProgressTargets.set(runId, (runProgress) => {
           status.textContent = formatRunProgress(runProgress);
         });
+        let dbWarning = "";
+        let recorder: ReturnType<typeof createRecorder> | null = null;
         try {
           const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
           if (tab?.id === undefined) throw new Error("Aktifkan tab FASIH SQL Lab.");
@@ -686,28 +934,40 @@ function renderGroups(): void {
           activeRun = { runId, tabId };
           run.textContent = "■ Stop";
           run.classList.add("stop-button");
+          if (startRow === 1 && maxRows === undefined) {
+            recorder = createRecorder(runId, file, group.path, await sha256Hex(file.content), (message) => { dbWarning = message; });
+          }
           await collectQuery(
-            (offset, _limit, iteration) => {
-              status.textContent = formatRunProgress({
-                runId,
-                path: file.path,
-                iteration,
-                state: "running",
-                rowsCollected: Math.max(0, offset - (startRow - 1)),
-              });
-              pending = chrome.runtime.sendMessage({ type: "RUN_SQL_FILE", path: file.path, tabId: tab.id!, runId, offset, limit: _limit, iteration } satisfies ExtensionMessage) as Promise<SqlChunkResponse>;
-              return pending;
+            rateLimited(
+              (offset, _limit, iteration) => {
+                status.textContent = formatRunProgress({
+                  runId,
+                  path: file.path,
+                  iteration,
+                  state: "running",
+                  rowsCollected: Math.max(0, offset - (startRow - 1)),
+                });
+                pending = chrome.runtime.sendMessage({ type: "RUN_SQL_FILE", path: file.path, tabId: tab.id!, runId, offset, limit: _limit, iteration } satisfies ExtensionMessage) as Promise<SqlChunkResponse>;
+                return pending;
+              },
+              (message) => { status.textContent = message; },
+              controller.signal,
+            ),
+            async (columns, rows) => {
+              await output.append({ filename: file.path, title: extractSqlTitle(file.content, file.name), columns, rows });
+              await recorder?.append(columns, rows);
             },
-            (columns, rows) => output.append({ filename: file.path, title: extractSqlTitle(file.content, file.name), columns, rows }),
             () => stopRequested,
             (message) => { status.textContent = message; },
             controller.signal,
             { startRow, maxRows },
           );
+          await recorder?.finish("complete");
           await output.flush(true);
-          status.textContent = `Selesai: ${output.totalRows.toLocaleString("id-ID")} baris · ${output.parts} file Excel diunduh.`;
+          status.textContent = `Selesai: ${output.totalRows.toLocaleString("id-ID")} baris · ${output.parts} file Excel diunduh.${dbWarning ? ` ${dbWarning}` : ""}`;
         } catch (error) {
-          status.textContent = await finishPartial(output, error);
+          await recorder?.finish(stopRequested ? "partial" : "error", error instanceof Error ? error.message : "Run gagal.");
+          status.textContent = await finishPartial(output, error) + (dbWarning ? ` ${dbWarning}` : "");
         } finally {
           if (tabId !== undefined) {
             void (pending ?? Promise.resolve()).then(() => clearRun(runId, tabId!), () => clearRun(runId, tabId!));
@@ -748,6 +1008,8 @@ async function persistWilayah(next: WilayahConfig): Promise<boolean> {
     return false;
   }
   byId("wilayah-error").textContent = "";
+  // Stored results and skip decisions are per wilayah.
+  for (const path of kodeBadges.keys()) refreshBadge(path);
   const saved = byId("wilayah-saved");
   saved.textContent = "Tersimpan";
   window.setTimeout(() => (saved.textContent = ""), 1200);
@@ -905,6 +1167,11 @@ async function importRepositoryFolder(fileList: FileList | null): Promise<void> 
     renderSource();
     await saveSnapshot(nextSnapshot);
     snapshot = nextSnapshot;
+    try {
+      await ensureKodeAssigned();
+    } catch (error) {
+      byId("db-status").textContent = error instanceof Error ? `Kode anomali gagal disimpan: ${error.message}` : "Kode anomali gagal disimpan.";
+    }
     progress = { phase: "success", message: "Imported — cache lama diganti" };
     render();
   } catch (error) {
@@ -942,6 +1209,22 @@ newLevel2Input.addEventListener("keydown", (event) => {
   if (event.key === "Enter") void confirmAdd("level2", newLevel2Input, "add-level2-row");
 });
 byId("close-preview").addEventListener("click", () => byId<HTMLDialogElement>("preview-dialog").close());
+byId("db-clear").addEventListener("click", async () => {
+  if (folderRunning) {
+    byId("db-status").textContent = "Tunggu run selesai sebelum mengosongkan database.";
+    return;
+  }
+  if (!window.confirm("Hapus semua hasil, riwayat run, dan status 0-record yang tersimpan? Kode anomali (T…) tetap disimpan.")) return;
+  try {
+    await clearResults();
+    resultIndex = new Map();
+    for (const path of kodeBadges.keys()) refreshBadge(path);
+    await renderDatabase();
+    byId("db-status").textContent = "Database hasil dikosongkan.";
+  } catch (error) {
+    byId("db-status").textContent = error instanceof Error ? error.message : "Database gagal dikosongkan.";
+  }
+});
 
 void initialize().catch((error: unknown) => {
   if (isContextInvalidated(error)) {
