@@ -2,6 +2,13 @@
 
 QueryFlow adalah Chrome Extension untuk menjalankan query SQL di FASIH SQL Lab (dibangun dari dasar Superset) dan mengunduh hasilnya sebagai file Excel.
 
+Fork ini menambahkan:
+
+- **Database hasil lokal** (IndexedDB): hasil lengkap terakhir tiap query per filter wilayah.
+- **Batas 30 eksekusi SQL per menit** ke SQL Lab.
+- **Lewati query yang tidak pernah menghasilkan record**, per folder, dan tombol untuk menjalankan semua query yang pernah menghasilkan record di semua folder.
+- **Kode anomali taskforce** (`T10`, `T11`, …) per query, **export CSV** dan **push langsung** ke aplikasi monitoring SE-Meira, sehingga satu assignment terpetakan ke semua anomalinya.
+
 - Integrasi: FASIH Dashboard / FASIH SQL Lab
 - Contoh penggunaan parameter: SE2026 — Sensus Ekonomi 2026
 - Initiated by: [D. Agung Sungkono](https://github.com/d-agung-sungkono)
@@ -44,20 +51,13 @@ QueryFlow menyimpan salinan lokal (snapshot). Jika isi file SQL berubah, impor f
 
 - Klik **Run** di samping satu file untuk menjalankan satu query.
 - Klik **Run Folder** untuk menjalankan semua query yang dipilih dalam folder secara berurutan.
- Klik **Stop** untuk menghentikan proses. Hasil yang sudah diterima tetap diunduh sebagai Excel parsial atau ZIP parsial sesuai pengaturan folder.
+- Klik **▶ Run query yang pernah menghasilkan record** (di atas daftar folder) untuk menjalankan, folder demi folder, semua query yang hasil tersimpannya untuk filter wilayah aktif pernah berisi record. Centang pilihan query diabaikan; pengaturan, Excel, dan push otomatis tiap folder tetap berlaku.
+- Klik **Stop** untuk menghentikan proses. Hasil yang sudah diterima tetap diunduh sebagai Excel parsial atau ZIP parsial sesuai pengaturan folder.
 - Klik nama file untuk melihat SQL; gunakan **Copy** untuk menyalin SQL dengan filter wilayah yang dipilih.
 
 Hasil setiap query menjadi satu sheet Excel. Tanpa pemisahan kolom, hasil satu folder digabung dalam satu workbook; file besar dapat dipecah menjadi beberapa bagian bernomor. Jika satu query gagal, hasil yang sudah terkumpul tetap diunduh sebagai output parsial.
 
 ### Filter wilayah
-
-### Pisahkan hasil menurut kolom
-
-Di pengaturan setiap folder, isi **Pisahkan berdasarkan kolom** untuk membuat workbook terpisah bagi setiap nilai unik. Kolom kedua bersifat opsional; jika diisi, setiap kombinasi kedua nilai menjadi satu workbook. Nama yang dimasukkan harus tersedia pada header hasil semua query terpilih. Pencocokan mengabaikan huruf besar/kecil dan spasi di awal/akhir.
-
-QueryFlow memeriksa header dari hasil SQL Lab saat query mulai, tanpa menjalankan query tambahan. Jika kolom tidak ditemukan atau nama header ambigu, batch berhenti sebelum menerima baris query tersebut. Nilai kolom yang kosong atau `NULL` masuk ke kelompok `(blank)`. Batas halaman SQL tidak memulai kelompok baru; nilai yang sama tetap masuk ke workbook yang sama lintas halaman dan file SQL.
-
-Saat pemisahan aktif, setiap checkpoint diunduh sebagai ZIP berisi workbook per kelompok dan `manifest.json`. Simpan seluruh ZIP dengan run ID yang sama. Manifest checkpoint berstatus `in_progress`; ZIP terakhir berisi status `complete` atau `incomplete`. Jika batch gagal, ZIP checkpoint yang sudah diunduh tetap ada dan ZIP terakhir menandai kegagalan serta mencantumkan checkpoint sebelumnya. Status ini penting karena checkpoint lama tidak dapat ditarik kembali dari folder Downloads.
 
 Filter wilayah hanya diterapkan pada SQL yang menggunakan parameter `filter_provinsi` dan `filter_kabupaten`. Isi kode provinsi (Level 1) atau kode kabupaten/kota (Level 2); jika Level 2 diisi, Level 1 tidak digunakan. Biarkan keduanya kosong untuk tidak menerapkan filter wilayah dari QueryFlow.
 
@@ -70,6 +70,14 @@ WITH param_wilayah AS (
         '' AS filter_kabupaten
 )
 ```
+
+### Pisahkan hasil menurut kolom
+
+Di pengaturan setiap folder, isi **Pisahkan berdasarkan kolom** untuk membuat workbook terpisah bagi setiap nilai unik. Kolom kedua bersifat opsional; jika diisi, setiap kombinasi kedua nilai menjadi satu workbook. Nama yang dimasukkan harus tersedia pada header hasil semua query terpilih. Pencocokan mengabaikan huruf besar/kecil dan spasi di awal/akhir.
+
+QueryFlow memeriksa header dari hasil SQL Lab saat query mulai, tanpa menjalankan query tambahan. Jika kolom tidak ditemukan atau nama header ambigu, batch berhenti sebelum menerima baris query tersebut. Nilai kolom yang kosong atau `NULL` masuk ke kelompok `(blank)`. Batas halaman SQL tidak memulai kelompok baru; nilai yang sama tetap masuk ke workbook yang sama lintas halaman dan file SQL.
+
+Saat pemisahan aktif, setiap checkpoint diunduh sebagai ZIP berisi workbook per kelompok dan `manifest.json`. Simpan seluruh ZIP dengan run ID yang sama. Manifest checkpoint berstatus `in_progress`; ZIP terakhir berisi status `complete` atau `incomplete`. Jika batch gagal, ZIP checkpoint yang sudah diunduh tetap ada dan ZIP terakhir menandai kegagalan serta mencantumkan checkpoint sebelumnya. Status ini penting karena checkpoint lama tidak dapat ditarik kembali dari folder Downloads.
 
 ## Pengaturan Lanjutan
 
@@ -86,8 +94,9 @@ Pengaturan disimpan per folder. Nilai default biasanya cukup untuk penggunaan bi
 QueryFlow menyimpan hasil setiap run di database lokal browser (IndexedDB). Yang disimpan adalah run **lengkap** terakhir per query dan per filter wilayah, ditambah riwayat run. Run parsial, run yang gagal, dan run dengan **Mulai Baris**/**Maks Total Baris** yang diubah tidak menggantikan hasil lengkap.
 
 - **Kode anomali**: setiap query mendapat kode taskforce tetap (`T10`, `T11`, …), ditampilkan sebagai badge di samping nama file bersama jumlah record terakhir. Klik badge untuk mengganti kode. Kode lama tidak berubah saat folder diimpor ulang.
-- **▶ Run query yang pernah menghasilkan record** (di atas daftar folder): menjalankan, folder demi folder, semua query yang hasil tersimpannya untuk filter wilayah aktif pernah berisi record. Centang pilihan query diabaikan; pengaturan, Excel, dan push otomatis tiap folder tetap berlaku. Klik lagi untuk berhenti.
+- **▶ Run query yang pernah menghasilkan record**: lihat [Jalankan query](#4-jalankan-query). Jumlah query di tombol dihitung dari database ini untuk filter wilayah aktif.
 - **Hanya query yang pernah menghasilkan record**: toggle per folder. Saat aktif, Run Folder melewati query yang sudah pernah selesai dijalankan dengan SQL dan filter wilayah yang sama tetapi tidak pernah menghasilkan record. Query baru atau yang SQL-nya berubah tetap dijalankan.
+- **Database Hasil** (bagian 04 panel) menampilkan ringkasan isi database dan tombol untuk mengosongkannya; kode anomali tetap disimpan.
 - **Batas request**: eksekusi SQL ke SQL Lab dibatasi 30 per menit (jendela bergulir 60 detik) untuk semua Run dan Run Folder. Pengambilan lanjutan dari hasil yang sudah ada di SQL Lab tidak dihitung.
 - **⇩ Export Monitoring (CSV)**: mengunduh hasil lengkap terakhir dari query terpilih ke `Downloads/QueryFlow-monitoring/`, satu CSV per kode (ZIP bila lebih dari satu). Formatnya adalah CSV taskforce aplikasi monitoring (halaman **Anomali**). Kolom wajibnya: `kode_anomali, nama_anomali, assignment_id, kode_sls, nama_sls, nama_objek, no_objek, status, email_pencacah, email_pengawas, updated_at`. Kolom hasil query lainnya ikut sebagai detail.
 
@@ -116,15 +125,25 @@ Di bagian **05 Aplikasi Monitoring**, isi **URL target** (mis. `https://se-meira
 
 Di aplikasi monitoring, satu assignment yang terjaring beberapa query tampil sebagai satu baris di tabel Rincian dengan semua kodenya (mis. `T2, T12, U5`).
 
+Push memerlukan aplikasi monitoring yang menyediakan `GET /api/ping` dan `POST /api/anomali/taskforce` dengan header `Authorization: Bearer <token>`. Body `POST` berupa JSON `{kode, csv, filename, wilayah}`; `csv` adalah CSV taskforce yang sama dengan hasil Export Monitoring.
+
 > Importer monitoring menghapus baris lama dengan kode yang sama bila baris itu tidak ada di berkas baru. Karena itu, jalankan ulang query sampai lengkap sebelum export, dan jangan memakai hasil yang difilter ke sebagian wilayah untuk kode yang biasanya mencakup semua wilayah.
+
+## Instalasi
+
+Unduh atau build folder extension, lalu di Chrome buka `chrome://extensions`, aktifkan **Developer mode**, pilih **Load unpacked**, dan pilih folder hasil build (`dist/`). Untuk memperbarui, ganti isi folder tersebut lalu klik **Reload** pada extension; database hasil dan pengaturan tetap tersimpan selama extension tidak dihapus.
 
 ## Instalasi untuk Development
 
 Perlu Node.js 20.19+ atau 22.12+.
 
 ```bash
+git clone https://github.com/Rasyidarfan/query-flow.git
+cd query-flow
 npm install
-npm run build
+npm run build   # typecheck + build ke dist/
+npm test        # unit test (vitest)
+npm run lint
 ```
 
 Di Chrome, buka `chrome://extensions`, aktifkan **Developer mode**, pilih **Load unpacked**, lalu pilih folder `dist/`. Setelah membangun ulang, klik **Reload** pada extension.
