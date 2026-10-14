@@ -103,6 +103,17 @@ Kolom diisi otomatis dari nama kolom hasil query, tanpa membedakan huruf besar/k
 
 Baris tanpa `assignment_id` atau tanpa kode SLS 16 digit tidak diekspor, karena importer monitoring akan menolaknya. Ringkasan export menyebutkan query mana yang terdampak. Query dengan 0 record dan query yang belum punya run lengkap tidak diekspor.
 
+### Push langsung ke aplikasi monitoring
+
+Di bagian **05 Aplikasi Monitoring**, isi **URL target** (mis. `https://se-meira.bps9702.com`) dan **Token API** (nilai `REKAP_API_TOKEN` di server), lalu klik **Simpan & Tes Koneksi**. Chrome meminta izin akses ke host tersebut sekali saja.
+
+- **⇪ Push ke Monitoring** (per folder) mengirim hasil lengkap terakhir dari query terpilih untuk wilayah aktif, satu request per kode anomali.
+- **Push otomatis setelah run lengkap**: setiap query yang selesai lengkap pada Run/Run Folder langsung dikirim.
+- Berbeda dengan export CSV, hasil **0 record ikut dikirim**: anomali kode itu dihapus di aplikasi monitoring, karena query tidak lagi menemukannya. Penghapusan hanya berlaku di kabupaten yang tercakup filter wilayah aktif.
+- Query yang barisnya tidak punya kode SLS 16 digit tidak dikirim, supaya anomali lama tidak ikut terhapus.
+
+Di aplikasi monitoring, satu assignment yang terjaring beberapa query tampil sebagai satu baris di tabel Rincian dengan semua kodenya (mis. `T2, T12, U5`).
+
 > Importer monitoring menghapus baris lama dengan kode yang sama bila baris itu tidak ada di berkas baru. Karena itu, jalankan ulang query sampai lengkap sebelum export, dan jangan memakai hasil yang difilter ke sebagian wilayah untuk kode yang biasanya mencakup semua wilayah.
 
 ## Instalasi untuk Development
@@ -125,6 +136,10 @@ Di Chrome, buka `chrome://extensions`, aktifkan **Developer mode**, pilih **Load
 - Versi ini ditujukan untuk FASIH SQL Lab. Perubahan pada aplikasi FASIH/Superset dapat memengaruhi kompatibilitas.
 
 ## Changelog
+
+### 0.5.0
+
+- Tambah push langsung ke aplikasi monitoring (URL target & token tersimpan), manual per folder atau otomatis setelah run lengkap.
 
 ### 0.4.0
 

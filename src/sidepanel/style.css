@@ -223,3 +223,6 @@ pre { height: calc(100% - 62px); margin: 0; padding: 16px; overflow: auto; color
 .export-monitoring-button { margin-top: 6px; }
 .groups .progress { white-space: pre-line; }
 .db-summary { margin: 0 0 6px; font: 600 12px ui-monospace, SFMono-Regular, monospace; }
+.target-field { margin-bottom: 8px; }
+.target-field input { width: 100%; box-sizing: border-box; }
+#target-status { white-space: pre-line; }

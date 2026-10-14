@@ -10,6 +10,8 @@ import { groupSqlFiles, isSqlPath } from "../services/repository-sync/files";
 import { addWilayahCode, validateWilayah } from "../services/wilayah";
 import { assignKode, shouldSkipQuery, wilayahKey } from "../services/monitoring";
 import { exportMonitoring } from "../services/monitoring/export";
+import { formatPushSummary, pingTarget, pushMonitoring } from "../services/monitoring/push";
+import { DEFAULT_TARGET, isTargetReady, loadTarget, normalizeBaseUrl, originPattern, saveTarget, type MonitoringTarget } from "../services/monitoring/target";
 import { RateLimiter } from "../services/rate-limit";
 import { clearResults, countRuns, getAllResults, getKodeMap, resultId, ResultRecorder, saveKodeMap, sha256Hex, type ResultRecord, type RunStatus } from "../services/results-db";
 import { TARGET, type ExtensionMessage, type RepositorySnapshot, type ScanResult, type SqlFile, type SqlRunProgress, type SqlChunkResponse, type SyncProgress, type WilayahConfig } from "../types";
@@ -21,6 +23,7 @@ const sqlLimiter = new RateLimiter(SQL_REQUESTS_PER_MINUTE, 60_000);
 let snapshot: RepositorySnapshot | null = null;
 let kodeMap: Record<string, number> = {};
 let resultIndex = new Map<string, ResultRecord>();
+let target: MonitoringTarget = { ...DEFAULT_TARGET };
 const kodeBadges = new Map<string, HTMLButtonElement>();
 let wilayah: WilayahConfig = { level1: [], level2: [] };
 let folderConfigs: Record<string, StoredFolderConfig> = {};
@@ -118,6 +121,28 @@ app.innerHTML = `
         </div>
       </div>
     </section>
+    <section class="section" aria-labelledby="target-title">
+      <div class="section-heading"><span>05</span><h2 id="target-title">Aplikasi Monitoring</h2></div>
+      <div class="source-card">
+        <div class="config-field target-field">
+          <label for="target-url">URL target</label>
+          <input id="target-url" type="url" autocomplete="off" placeholder="https://se-meira.bps9702.com" />
+        </div>
+        <div class="config-field target-field">
+          <label for="target-token">Token API</label>
+          <input id="target-token" type="password" autocomplete="off" placeholder="REKAP_API_TOKEN di server" />
+        </div>
+        <label class="advanced-settings-toggle">
+          <input id="target-auto" type="checkbox" />
+          <span>Push otomatis setelah run lengkap</span>
+        </label>
+        <p class="field-note">Hasil lengkap terakhir dikirim sebagai anomali taskforce (kode T…) ke halaman Anomali. Hasil 0 record menghapus anomali kode itu di wilayah yang sama.</p>
+        <p id="target-status" class="progress" role="status"></p>
+        <div class="source-actions">
+          <button id="target-save" class="secondary-button" type="button">Simpan &amp; Tes Koneksi</button>
+        </div>
+      </div>
+    </section>
     <footer class="author-credit">Initiated by D. Agung Sungkono</footer>
   </main>
   <dialog id="preview-dialog">
@@ -148,7 +173,34 @@ async function initialize(): Promise<void> {
   } catch (error) {
     byId("db-status").textContent = error instanceof Error ? `Database hasil tidak tersedia: ${error.message}` : "Database hasil tidak tersedia.";
   }
+  target = await loadTarget();
+  renderTarget();
   render();
+}
+
+function renderTarget(): void {
+  byId<HTMLInputElement>("target-url").value = target.url;
+  byId<HTMLInputElement>("target-token").value = target.token;
+  byId<HTMLInputElement>("target-auto").checked = target.autoPush;
+  for (const button of document.querySelectorAll<HTMLButtonElement>(".push-monitoring-button")) {
+    button.title = isTargetReady(target) ? `Kirim ke ${target.url}` : "Atur URL target & token di bagian 05 Aplikasi Monitoring.";
+  }
+}
+
+/**
+ * Pushes one query right after a complete run when auto-push is on. Returns a
+ * note for the status line; push failures never fail the SQL run itself.
+ */
+async function autoPush(file: SqlFile, runWilayah: WilayahConfig): Promise<{ pushed: boolean; note: string }> {
+  const kode = kodeMap[file.path];
+  if (!target.autoPush || !isTargetReady(target) || kode === undefined) return { pushed: false, note: "" };
+  if (resultIndex.get(resultId(file.path, wilayahKey(runWilayah)))?.lastStatus !== "complete") return { pushed: false, note: "" };
+  try {
+    const summary = await pushMonitoring(target, [{ path: file.path, title: extractSqlTitle(file.content, file.name), kode }], runWilayah);
+    return { pushed: summary.pushed > 0, note: summary.notes.join(" ") };
+  } catch (error) {
+    return { pushed: false, note: `Push monitoring gagal: ${error instanceof Error ? error.message : "error"}` };
+  }
 }
 
 async function loadResultDatabase(): Promise<void> {
@@ -711,7 +763,10 @@ function renderGroups(): void {
         ? new SplitChunkedExport(group.path, createRunId(), splitColumns, { checkpointRows })
         : new ChunkedExport(group.path, undefined, undefined, undefined, checkpointRows);
       batchStatus.classList.remove("progress-error", "progress-warning");
-      const runWilayahKey = wilayahKey(wilayah);
+      const runWilayah = structuredClone(wilayah);
+      const runWilayahKey = wilayahKey(runWilayah);
+      const pushNotes: string[] = [];
+      let pushedCount = 0;
       // Only full-range runs are stored as complete results; an offset or row cap yields a subset.
       const fullRange = startRow === 1 && maxRows === undefined;
       let skipped = 0;
@@ -769,6 +824,11 @@ function renderGroups(): void {
               },
             );
             await recorder?.finish("complete");
+            if (recorder) {
+              const pushed = await autoPush(file, runWilayah);
+              if (pushed.pushed) pushedCount++;
+              if (pushed.note) pushNotes.push(`${file.name}: ${pushed.note}`);
+            }
           } catch (error) {
             await recorder?.finish(batchStopRequested ? "partial" : "error", error instanceof Error ? error.message : "Run gagal.");
             throw error;
@@ -784,9 +844,13 @@ function renderGroups(): void {
         batchStatus.textContent = `Selesai: ${output.totalRows.toLocaleString("id-ID")} baris · ${output.parts} ${outputType} diunduh.`
           + (skipped ? ` ${skipped} query dilewati (tidak pernah menghasilkan record).` : "")
           + (fullRange ? "" : " Rentang baris dibatasi, hasil tidak disimpan ke database.")
-          + (dbWarning ? ` ${dbWarning}` : "");
+          + (dbWarning ? ` ${dbWarning}` : "")
+          + (pushedCount ? ` ${pushedCount} query dikirim ke monitoring.` : "")
+          + (pushNotes.length ? `\n${pushNotes.join("\n")}` : "");
+        if (pushNotes.length) batchStatus.classList.add("progress-warning");
       } catch (error) {
-        batchStatus.textContent = await finishPartial(output, error) + (dbWarning ? ` ${dbWarning}` : "");
+        batchStatus.textContent = await finishPartial(output, error) + (dbWarning ? ` ${dbWarning}` : "")
+          + (pushNotes.length ? `\n${pushNotes.join("\n")}` : "");
       } finally {
         folderRunning = false;
         batchRunId = null;
@@ -830,7 +894,40 @@ function renderGroups(): void {
       }
     });
 
-    files.append(configBox, batch, exportButton, batchStatus);
+    const pushButton = document.createElement("button");
+    pushButton.type = "button";
+    pushButton.className = "secondary-button export-monitoring-button push-monitoring-button";
+    pushButton.textContent = "⇪ Push ke Monitoring";
+    pushButton.title = isTargetReady(target) ? `Kirim ke ${target.url}` : "Atur URL target & token di bagian 05 Aplikasi Monitoring.";
+    pushButton.addEventListener("click", async () => {
+      if (!isTargetReady(target)) {
+        batchStatus.textContent = "Atur URL target & token di bagian 05 Aplikasi Monitoring dulu.";
+        batchStatus.classList.add("progress-warning");
+        return;
+      }
+      const items = group.files
+        .filter((file) => selectedPaths.has(file.path) && kodeMap[file.path] !== undefined)
+        .map((file) => ({ path: file.path, title: extractSqlTitle(file.content, file.name), kode: kodeMap[file.path]! }));
+      if (!items.length) {
+        batchStatus.textContent = "Pilih minimal 1 query untuk dikirim.";
+        return;
+      }
+      pushButton.disabled = true;
+      batchStatus.classList.remove("progress-error", "progress-warning");
+      batchStatus.textContent = `Mengirim ${items.length} query ke ${target.url}…`;
+      try {
+        const summary = await pushMonitoring(target, items, structuredClone(wilayah));
+        batchStatus.textContent = formatPushSummary(summary);
+        if (summary.notes.length) batchStatus.classList.add(summary.pushed ? "progress-warning" : "progress-error");
+      } catch (error) {
+        batchStatus.textContent = error instanceof Error ? error.message : "Push monitoring gagal.";
+        batchStatus.classList.add("progress-error");
+      } finally {
+        pushButton.disabled = false;
+      }
+    });
+
+    files.append(configBox, batch, exportButton, pushButton, batchStatus);
 
     for (const file of group.files) {
       const isSelected = selectedPaths.has(file.path);
@@ -927,6 +1024,7 @@ function renderGroups(): void {
         });
         let dbWarning = "";
         let recorder: ReturnType<typeof createRecorder> | null = null;
+        const runWilayah = structuredClone(wilayah);
         try {
           const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
           if (tab?.id === undefined) throw new Error("Aktifkan tab FASIH SQL Lab.");
@@ -963,8 +1061,9 @@ function renderGroups(): void {
             { startRow, maxRows },
           );
           await recorder?.finish("complete");
+          const pushNote = recorder ? (await autoPush(file, runWilayah)).note : "";
           await output.flush(true);
-          status.textContent = `Selesai: ${output.totalRows.toLocaleString("id-ID")} baris · ${output.parts} file Excel diunduh.${dbWarning ? ` ${dbWarning}` : ""}`;
+          status.textContent = `Selesai: ${output.totalRows.toLocaleString("id-ID")} baris · ${output.parts} file Excel diunduh.${dbWarning ? ` ${dbWarning}` : ""}${pushNote ? `\n${pushNote}` : ""}`;
         } catch (error) {
           await recorder?.finish(stopRequested ? "partial" : "error", error instanceof Error ? error.message : "Run gagal.");
           status.textContent = await finishPartial(output, error) + (dbWarning ? ` ${dbWarning}` : "");
@@ -1209,6 +1308,47 @@ newLevel2Input.addEventListener("keydown", (event) => {
   if (event.key === "Enter") void confirmAdd("level2", newLevel2Input, "add-level2-row");
 });
 byId("close-preview").addEventListener("click", () => byId<HTMLDialogElement>("preview-dialog").close());
+byId("target-save").addEventListener("click", async () => {
+  const status = byId("target-status");
+  status.classList.remove("progress-error", "progress-warning");
+  let next: MonitoringTarget;
+  try {
+    next = {
+      url: normalizeBaseUrl(byId<HTMLInputElement>("target-url").value),
+      token: byId<HTMLInputElement>("target-token").value.trim(),
+      autoPush: byId<HTMLInputElement>("target-auto").checked,
+    };
+  } catch (error) {
+    status.textContent = error instanceof Error ? `URL tidak valid: ${error.message}` : "URL tidak valid.";
+    status.classList.add("progress-error");
+    return;
+  }
+  if (next.url) {
+    // Must run inside the click gesture: Chrome asks the user to allow access to this host.
+    const granted = await chrome.permissions.request({ origins: [originPattern(next.url)] });
+    if (!granted) {
+      status.textContent = `Izin akses ke ${new URL(next.url).host} ditolak; push tidak bisa dipakai.`;
+      status.classList.add("progress-error");
+      return;
+    }
+  }
+  target = next;
+  await saveTarget(target);
+  renderTarget();
+  if (!isTargetReady(target)) {
+    status.textContent = "Tersimpan. Isi URL dan token untuk mengaktifkan push.";
+    return;
+  }
+  status.textContent = "Tersimpan. Menguji koneksi…";
+  try {
+    await pingTarget(target);
+    status.textContent = `Terhubung ke ${target.url}.`;
+  } catch (error) {
+    status.textContent = `Tersimpan, tetapi tes koneksi gagal: ${error instanceof Error ? error.message : "error"}`;
+    status.classList.add("progress-error");
+  }
+});
+
 byId("db-clear").addEventListener("click", async () => {
   if (folderRunning) {
     byId("db-status").textContent = "Tunggu run selesai sebelum mengosongkan database.";
