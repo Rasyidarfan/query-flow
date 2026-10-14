@@ -130,7 +130,7 @@ app.innerHTML = `
         </div>
         <div class="config-field target-field">
           <label for="target-token">Token API</label>
-          <input id="target-token" class="secret-input" type="text" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" placeholder="Salin dari /admin/token di aplikasi monitoring" />
+          <input id="target-token" class="secret-input" type="text" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" placeholder="Salin dari tombol Token API di halaman Anomali" />
         </div>
         <label class="advanced-settings-toggle">
           <input id="target-auto" type="checkbox" />
@@ -1346,7 +1346,7 @@ byId("target-save").addEventListener("click", async () => {
   } catch (error) {
     const message = error instanceof Error ? error.message : "error";
     const hint = /token salah/i.test(message)
-      ? ` Token terisi ${target.token.length} karakter, berakhiran …${target.token.slice(-4)}. Salin ulang dari ${target.url}/admin/token.`
+      ? ` Token terisi ${target.token.length} karakter, berakhiran …${target.token.slice(-4)}. Salin ulang lewat tombol 🔑 Token API di ${target.url}/anomali.`
       : "";
     status.textContent = `Tersimpan, tetapi tes koneksi gagal: ${message}${hint}`;
     status.classList.add("progress-error");

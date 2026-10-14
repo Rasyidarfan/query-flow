@@ -105,7 +105,7 @@ Baris tanpa `assignment_id` atau tanpa kode SLS 16 digit tidak diekspor, karena 
 
 ### Push langsung ke aplikasi monitoring
 
-Di bagian **05 Aplikasi Monitoring**, isi **URL target** (mis. `https://se-meira.bps9702.com`) dan **Token API** (salin dari halaman `/admin/token` aplikasi monitoring), lalu klik **Simpan & Tes Koneksi**. Chrome meminta izin akses ke host tersebut sekali saja.
+Di bagian **05 Aplikasi Monitoring**, isi **URL target** (mis. `https://se-meira.bps9702.com`) dan **Token API** (salin lewat tombol **🔑 Token API** di halaman Anomali aplikasi monitoring), lalu klik **Simpan & Tes Koneksi**. Chrome meminta izin akses ke host tersebut sekali saja.
 
 - **⇪ Push ke Monitoring** (per folder) mengirim hasil lengkap terakhir dari query terpilih untuk wilayah aktif, satu request per kode anomali.
 - **Push otomatis setelah run lengkap**: setiap query yang selesai lengkap pada Run/Run Folder langsung dikirim.
@@ -136,6 +136,10 @@ Di Chrome, buka `chrome://extensions`, aktifkan **Developer mode**, pilih **Load
 - Versi ini ditujukan untuk FASIH SQL Lab. Perubahan pada aplikasi FASIH/Superset dapat memengaruhi kompatibilitas.
 
 ## Changelog
+
+### 0.5.2
+
+- Petunjuk token mengarah ke tombol Token API di halaman Anomali.
 
 ### 0.5.1
 
