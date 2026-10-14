@@ -25,6 +25,11 @@ let kodeMap: Record<string, number> = {};
 let resultIndex = new Map<string, ResultRecord>();
 let target: MonitoringTarget = { ...DEFAULT_TARGET };
 const kodeBadges = new Map<string, HTMLButtonElement>();
+
+type FolderOutcome = "done" | "stopped" | "failed" | "invalid";
+/** Run Folder of each folder, so one button can run queries across every folder. */
+const folderRunners = new Map<string, { run: (files: SqlFile[]) => Promise<FolderOutcome>; stop: () => void }>();
+let everRunActive: { stop: () => void } | null = null;
 let wilayah: WilayahConfig = { level1: [], level2: [] };
 let folderConfigs: Record<string, StoredFolderConfig> = {};
 let progress: SyncProgress = { phase: "idle", message: "Not synced" };
@@ -107,6 +112,10 @@ app.innerHTML = `
           </ul>
         </div>
       </details>
+      <div id="run-ever-box" class="run-ever" hidden>
+        <button id="run-ever" class="secondary-button" type="button"></button>
+        <p id="run-ever-status" class="progress" role="status"></p>
+      </div>
       <div id="empty-groups" class="empty-state">Import folder SQL untuk melihat daftar query dan menjalankannya di FASIH SQL Lab.</div>
       <div id="groups" class="groups"></div>
     </section>
@@ -143,7 +152,10 @@ app.innerHTML = `
         </div>
       </div>
     </section>
-    <footer class="author-credit">Initiated by D. Agung Sungkono</footer>
+    <footer class="author-credit">
+      Initiated by <a href="https://github.com/d-agung-sungkono" target="_blank" rel="noopener">D. Agung Sungkono</a>
+      · Fork by <a href="https://github.com/Rasyidarfan" target="_blank" rel="noopener">Ahmad Arfan</a>
+    </footer>
   </main>
   <dialog id="preview-dialog">
     <div class="dialog-header"><div><span id="preview-path"></span><h3 id="preview-name"></h3></div><button id="close-preview" aria-label="Tutup">×</button></div>
@@ -311,6 +323,7 @@ function createRecorder(runId: string, file: SqlFile, folder: string, sqlHash: s
         const record = await recorder.finish(finalStatus, failed ? "Sebagian baris gagal disimpan ke database." : message);
         resultIndex.set(record.id, record);
         refreshBadge(file.path);
+        updateRunEverButton();
         void renderDatabase();
       } catch (error) {
         report(error);
@@ -411,6 +424,7 @@ function renderGroups(): void {
   const groupsElement = byId("groups");
   groupsElement.replaceChildren();
   kodeBadges.clear();
+  folderRunners.clear();
   byId("empty-groups").hidden = Boolean(snapshot?.groups.length);
   for (const group of snapshot?.groups ?? []) {
     const currentConfig = folderConfigs[group.path] ?? {};
@@ -722,17 +736,22 @@ function renderGroups(): void {
     let batchTabId: number | null = null;
     let batchStopRequested = false;
     let batchController = new AbortController();
+    let batchActive = false;
+    const stopFolder = (): void => {
+      if (!batchActive) return;
+      batchStopRequested = true;
+      batchController.abort();
+      batch.disabled = true;
+      batch.textContent = "■ Stopping…";
+      if (batchRunId && batchTabId !== null) void stopRun(batchRunId, batchTabId);
+    };
     batch.addEventListener("click", async () => {
       if (folderRunning) {
-        if (!batchRunId || batchTabId === null) {
+        if (!batchActive) {
           batchStatus.textContent = "Run Folder lain masih berjalan.";
           return;
         }
-        batchStopRequested = true;
-        batchController.abort();
-        batch.disabled = true;
-        batch.textContent = "■ Stopping…";
-        void stopRun(batchRunId, batchTabId);
+        stopFolder();
         return;
       }
 
@@ -741,6 +760,11 @@ function renderGroups(): void {
         batchStatus.textContent = "Pilih minimal 1 file SQL untuk dijalankan.";
         return;
       }
+      await runFolder(filesToRun);
+    });
+
+    const runFolder = async (filesToRun: SqlFile[]): Promise<FolderOutcome> => {
+      let outcome: FolderOutcome = "done";
       splitColumn1 = splitColumn1Input.value.trim();
       splitColumn2 = splitColumn2Input.value.trim();
       const useSplitColumns = advancedSettings && splitEnabled;
@@ -748,13 +772,14 @@ function renderGroups(): void {
         const splitColumnsError = validateSplitColumnInputs(splitColumn1, splitColumn2);
         if (splitColumnsError) {
           batchStatus.textContent = splitColumnsError;
-          return;
+          return "invalid";
         }
       }
       const splitColumns = useSplitColumns ? [splitColumn1, splitColumn2].filter(Boolean) : [];
       await persistCurrentFolderConfig();
 
       folderRunning = true;
+      batchActive = true;
       batchStopRequested = false;
       batchController = new AbortController();
       batch.textContent = "■ Stop";
@@ -849,10 +874,12 @@ function renderGroups(): void {
           + (pushNotes.length ? `\n${pushNotes.join("\n")}` : "");
         if (pushNotes.length) batchStatus.classList.add("progress-warning");
       } catch (error) {
+        outcome = batchStopRequested ? "stopped" : "failed";
         batchStatus.textContent = await finishPartial(output, error) + (dbWarning ? ` ${dbWarning}` : "")
           + (pushNotes.length ? `\n${pushNotes.join("\n")}` : "");
       } finally {
         folderRunning = false;
+        batchActive = false;
         batchRunId = null;
         batchTabId = null;
         batchStopRequested = false;
@@ -860,7 +887,9 @@ function renderGroups(): void {
         updateSelectionDisplay();
         batch.classList.remove("stop-button");
       }
-    });
+      return outcome;
+    };
+    folderRunners.set(group.path, { run: runFolder, stop: stopFolder });
 
     const exportButton = document.createElement("button");
     exportButton.type = "button";
@@ -1087,7 +1116,80 @@ function renderGroups(): void {
     details.append(summary, files);
     groupsElement.append(details);
   }
+  updateRunEverButton();
 }
+
+/** Queries whose stored results for the active wilayah ever contained a record, per folder. */
+function everProducedFiles(): { path: string; files: SqlFile[] }[] {
+  const key = wilayahKey(wilayah);
+  return (snapshot?.groups ?? [])
+    .map((group) => ({ path: group.path, files: group.files.filter((file) => resultIndex.get(resultId(file.path, key))?.everRows) }))
+    .filter((entry) => entry.files.length > 0);
+}
+
+function updateRunEverButton(): void {
+  const button = byId<HTMLButtonElement>("run-ever");
+  byId("run-ever-box").hidden = !snapshot?.groups.length;
+  if (everRunActive) return;
+  const folders = everProducedFiles();
+  const count = folders.reduce((sum, entry) => sum + entry.files.length, 0);
+  button.textContent = `▶ Run query yang pernah menghasilkan record (${count} query · ${folders.length} folder)`;
+  button.disabled = count === 0;
+  button.title = count
+    ? "Jalankan semua query di semua folder yang pernah menghasilkan record untuk filter wilayah aktif, folder demi folder (pilihan centang diabaikan). Pengaturan dan Excel tiap folder tetap berlaku."
+    : "Belum ada query yang pernah menghasilkan record untuk filter wilayah ini.";
+}
+
+byId("run-ever").addEventListener("click", async () => {
+  const button = byId<HTMLButtonElement>("run-ever");
+  const status = byId("run-ever-status");
+  if (everRunActive) {
+    everRunActive.stop();
+    button.disabled = true;
+    button.textContent = "■ Stopping…";
+    return;
+  }
+  if (folderRunning) {
+    status.textContent = "Tunggu run lain selesai.";
+    return;
+  }
+  const folders = everProducedFiles();
+  if (!folders.length) return;
+  let stopRequested = false;
+  let current: string | null = null;
+  everRunActive = {
+    stop: () => {
+      stopRequested = true;
+      if (current) folderRunners.get(current)?.stop();
+    },
+  };
+  button.textContent = "■ Stop";
+  button.classList.add("stop-button");
+  status.classList.remove("progress-error", "progress-warning");
+  const failed: string[] = [];
+  let finished = 0;
+  try {
+    for (const [index, entry] of folders.entries()) {
+      if (stopRequested) break;
+      const runner = folderRunners.get(entry.path);
+      if (!runner) continue;
+      current = entry.path;
+      status.textContent = `Folder ${index + 1}/${folders.length}: ${entry.path} (${entry.files.length} query) — progres di kartu foldernya.`;
+      const outcome = await runner.run(entry.files);
+      if (outcome === "stopped") break;
+      if (outcome === "done") finished++;
+      else failed.push(entry.path);
+    }
+  } finally {
+    current = null;
+    everRunActive = null;
+    button.classList.remove("stop-button");
+    status.textContent = (stopRequested ? `Dihentikan setelah ${finished} folder selesai.` : `Selesai: ${finished}/${folders.length} folder.`)
+      + (failed.length ? `\nGagal/terhenti: ${failed.join(", ")} — lihat pesan di kartu folder.` : "");
+    if (failed.length) status.classList.add("progress-warning");
+    updateRunEverButton();
+  }
+});
 
 async function persistWilayah(next: WilayahConfig): Promise<boolean> {
   const validation = validateWilayah(next);
@@ -1109,6 +1211,7 @@ async function persistWilayah(next: WilayahConfig): Promise<boolean> {
   byId("wilayah-error").textContent = "";
   // Stored results and skip decisions are per wilayah.
   for (const path of kodeBadges.keys()) refreshBadge(path);
+  updateRunEverButton();
   const saved = byId("wilayah-saved");
   saved.textContent = "Tersimpan";
   window.setTimeout(() => (saved.textContent = ""), 1200);
@@ -1363,6 +1466,7 @@ byId("db-clear").addEventListener("click", async () => {
     await clearResults();
     resultIndex = new Map();
     for (const path of kodeBadges.keys()) refreshBadge(path);
+  updateRunEverButton();
     await renderDatabase();
     byId("db-status").textContent = "Database hasil dikosongkan.";
   } catch (error) {

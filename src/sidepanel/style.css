@@ -227,3 +227,7 @@ pre { height: calc(100% - 62px); margin: 0; padding: 16px; overflow: auto; color
 .target-field input { width: 100%; box-sizing: border-box; }
 #target-status { white-space: pre-line; }
 .secret-input:not(:focus) { -webkit-text-security: disc; }
+.run-ever { margin: 0 0 12px; }
+.run-ever .secondary-button { width: 100%; }
+.run-ever .progress { white-space: pre-line; }
+.author-credit a { color: inherit; }

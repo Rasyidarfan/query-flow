@@ -4,7 +4,8 @@ QueryFlow adalah Chrome Extension untuk menjalankan query SQL di FASIH SQL Lab (
 
 - Integrasi: FASIH Dashboard / FASIH SQL Lab
 - Contoh penggunaan parameter: SE2026 — Sensus Ekonomi 2026
-- Initiated by: D.Agung Sungkono
+- Initiated by: [D. Agung Sungkono](https://github.com/d-agung-sungkono)
+- Fork by: [Ahmad Arfan](https://github.com/Rasyidarfan)
 
 QueryFlow adalah utilitas independen, bukan produk atau dokumentasi resmi BPS/FASIH.
 
@@ -85,6 +86,7 @@ Pengaturan disimpan per folder. Nilai default biasanya cukup untuk penggunaan bi
 QueryFlow menyimpan hasil setiap run di database lokal browser (IndexedDB). Yang disimpan adalah run **lengkap** terakhir per query dan per filter wilayah, ditambah riwayat run. Run parsial, run yang gagal, dan run dengan **Mulai Baris**/**Maks Total Baris** yang diubah tidak menggantikan hasil lengkap.
 
 - **Kode anomali**: setiap query mendapat kode taskforce tetap (`T10`, `T11`, …), ditampilkan sebagai badge di samping nama file bersama jumlah record terakhir. Klik badge untuk mengganti kode. Kode lama tidak berubah saat folder diimpor ulang.
+- **▶ Run query yang pernah menghasilkan record** (di atas daftar folder): menjalankan, folder demi folder, semua query yang hasil tersimpannya untuk filter wilayah aktif pernah berisi record. Centang pilihan query diabaikan; pengaturan, Excel, dan push otomatis tiap folder tetap berlaku. Klik lagi untuk berhenti.
 - **Hanya query yang pernah menghasilkan record**: toggle per folder. Saat aktif, Run Folder melewati query yang sudah pernah selesai dijalankan dengan SQL dan filter wilayah yang sama tetapi tidak pernah menghasilkan record. Query baru atau yang SQL-nya berubah tetap dijalankan.
 - **Batas request**: eksekusi SQL ke SQL Lab dibatasi 30 per menit (jendela bergulir 60 detik) untuk semua Run dan Run Folder. Pengambilan lanjutan dari hasil yang sudah ada di SQL Lab tidak dihitung.
 - **⇩ Export Monitoring (CSV)**: mengunduh hasil lengkap terakhir dari query terpilih ke `Downloads/QueryFlow-monitoring/`, satu CSV per kode (ZIP bila lebih dari satu). Formatnya adalah CSV taskforce aplikasi monitoring (halaman **Anomali**). Kolom wajibnya: `kode_anomali, nama_anomali, assignment_id, kode_sls, nama_sls, nama_objek, no_objek, status, email_pencacah, email_pengawas, updated_at`. Kolom hasil query lainnya ikut sebagai detail.
@@ -136,6 +138,11 @@ Di Chrome, buka `chrome://extensions`, aktifkan **Developer mode**, pilih **Load
 - Versi ini ditujukan untuk FASIH SQL Lab. Perubahan pada aplikasi FASIH/Superset dapat memengaruhi kompatibilitas.
 
 ## Changelog
+
+### 0.6.0
+
+- Tambah tombol untuk menjalankan semua query yang pernah menghasilkan record di semua folder.
+- Footer mencantumkan tautan GitHub pemrakarsa dan fork.
 
 ### 0.5.2
 
