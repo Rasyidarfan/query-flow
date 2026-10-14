@@ -11,7 +11,7 @@ import { addWilayahCode, validateWilayah } from "../services/wilayah";
 import { assignKode, shouldSkipQuery, wilayahKey } from "../services/monitoring";
 import { exportMonitoring } from "../services/monitoring/export";
 import { formatPushSummary, pingTarget, pushMonitoring } from "../services/monitoring/push";
-import { DEFAULT_TARGET, isTargetReady, loadTarget, normalizeBaseUrl, originPattern, saveTarget, type MonitoringTarget } from "../services/monitoring/target";
+import { DEFAULT_TARGET, isTargetReady, loadTarget, normalizeBaseUrl, normalizeToken, originPattern, saveTarget, type MonitoringTarget } from "../services/monitoring/target";
 import { RateLimiter } from "../services/rate-limit";
 import { clearResults, countRuns, getAllResults, getKodeMap, resultId, ResultRecorder, saveKodeMap, sha256Hex, type ResultRecord, type RunStatus } from "../services/results-db";
 import { TARGET, type ExtensionMessage, type RepositorySnapshot, type ScanResult, type SqlFile, type SqlRunProgress, type SqlChunkResponse, type SyncProgress, type WilayahConfig } from "../types";
@@ -130,7 +130,7 @@ app.innerHTML = `
         </div>
         <div class="config-field target-field">
           <label for="target-token">Token API</label>
-          <input id="target-token" type="password" autocomplete="off" placeholder="REKAP_API_TOKEN di server" />
+          <input id="target-token" class="secret-input" type="text" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" placeholder="Salin dari /admin/token di aplikasi monitoring" />
         </div>
         <label class="advanced-settings-toggle">
           <input id="target-auto" type="checkbox" />
@@ -1315,7 +1315,7 @@ byId("target-save").addEventListener("click", async () => {
   try {
     next = {
       url: normalizeBaseUrl(byId<HTMLInputElement>("target-url").value),
-      token: byId<HTMLInputElement>("target-token").value.trim(),
+      token: normalizeToken(byId<HTMLInputElement>("target-token").value),
       autoPush: byId<HTMLInputElement>("target-auto").checked,
     };
   } catch (error) {
@@ -1344,7 +1344,11 @@ byId("target-save").addEventListener("click", async () => {
     await pingTarget(target);
     status.textContent = `Terhubung ke ${target.url}.`;
   } catch (error) {
-    status.textContent = `Tersimpan, tetapi tes koneksi gagal: ${error instanceof Error ? error.message : "error"}`;
+    const message = error instanceof Error ? error.message : "error";
+    const hint = /token salah/i.test(message)
+      ? ` Token terisi ${target.token.length} karakter, berakhiran …${target.token.slice(-4)}. Salin ulang dari ${target.url}/admin/token.`
+      : "";
+    status.textContent = `Tersimpan, tetapi tes koneksi gagal: ${message}${hint}`;
     status.classList.add("progress-error");
   }
 });

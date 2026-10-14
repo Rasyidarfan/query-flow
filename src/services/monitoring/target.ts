@@ -25,6 +25,11 @@ export function normalizeBaseUrl(input: string): string {
   return `${url.origin}${path}`;
 }
 
+/** Strips what tends to come along when copying a token: whitespace, quotes, a `Bearer ` prefix. */
+export function normalizeToken(input: string): string {
+  return input.replace(/\s+/g, "").replace(/^["'`]+|["'`]+$/g, "").replace(/^Bearer/i, "");
+}
+
 /** Host permission pattern Chrome needs before the side panel may call the app. */
 export function originPattern(baseUrl: string): string {
   return `${new URL(baseUrl).origin}/*`;

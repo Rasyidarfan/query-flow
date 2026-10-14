@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeBaseUrl, originPattern } from "./target";
+import { normalizeBaseUrl, normalizeToken, originPattern } from "./target";
 
 describe("normalizeBaseUrl", () => {
   it("accepts the pasted page URL, bare host or trailing slash", () => {
@@ -17,4 +17,9 @@ describe("normalizeBaseUrl", () => {
 
 it("builds the host permission pattern", () => {
   expect(originPattern("https://host:8443/apps/rekap")).toBe("https://host:8443/*");
+});
+
+it("cleans a pasted token", () => {
+  expect(normalizeToken(" Bearer abc123\n")).toBe("abc123");
+  expect(normalizeToken("`abc 123`")).toBe("abc123");
 });

@@ -226,3 +226,4 @@ pre { height: calc(100% - 62px); margin: 0; padding: 16px; overflow: auto; color
 .target-field { margin-bottom: 8px; }
 .target-field input { width: 100%; box-sizing: border-box; }
 #target-status { white-space: pre-line; }
+.secret-input:not(:focus) { -webkit-text-security: disc; }
